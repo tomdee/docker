@@ -40,7 +40,7 @@ func (container *Container) initializeNetworking() error {
 }
 
 // ConnectToNetwork connects a container to the network
-func (container *Container) ConnectToNetwork(ctx context.Context, idOrName string) error {
+func (container *Container) ConnectToNetwork(idOrName string) error {
 	return nil
 }
 

@@ -889,6 +889,13 @@ func (container *Container) allocateNetwork() error {
 }
 
 // ConnectToNetwork connects a container to a netork
+func (container *Container) ConnectToNetwork(idOrName string) error {
+	if !container.Running {
+		return derr.ErrorCodeNotRunning.WithArgs(container.ID)
+	}
+	return container.connectToNetwork(idOrName, true)
+}
+
 func (container *Container) connectToNetwork(idOrName string, updateSettings bool) error {
 	if container.hostConfig.NetworkMode.IsContainer() {
 		return runconfig.ErrConflictSharedNetwork

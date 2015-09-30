@@ -1,4 +1,4 @@
-package server
+package network
 
 import (
 	"encoding/json"
@@ -7,16 +7,13 @@ import (
 	"net/http"
 	"strings"
 
+	"golang.org/x/net/context"
+
+	"github.com/docker/docker/api/server/httputils"
 	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/context"
 	"github.com/docker/docker/pkg/parsers/filters"
 	"github.com/docker/libnetwork"
 	"github.com/docker/libnetwork/netlabel"
-)
-
-var (
-	// ErrNoNetController represnts an error thrown when the controller is not initialized
-	ErrNoNetController = errors.New("network controller is not initialized")
 )
 
 const (
@@ -24,8 +21,8 @@ const (
 	byName
 )
 
-func (s *Server) getNetworksList(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
-	if err := parseForm(r); err != nil {
+func (n *networkRouter) getNetworksList(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
+	if err := httputils.ParseForm(r); err != nil {
 		return err
 	}
 
@@ -35,15 +32,10 @@ func (s *Server) getNetworksList(ctx context.Context, w http.ResponseWriter, r *
 		return err
 	}
 
-	nc := s.daemon.NetworkController()
-	if nc == nil {
-		return ErrNoNetController
-	}
-
 	list := []*types.NetworkResource{}
 	if names, ok := netFilters["name"]; ok {
 		for _, name := range names {
-			if nw, errRsp := findNetwork(nc, name, byName); errRsp == nil {
+			if nw, errRsp := findNetwork(n.netController, name, byName); errRsp == nil {
 				list = append(list, buildNetworkResource(nw))
 			}
 		}
@@ -56,55 +48,45 @@ func (s *Server) getNetworksList(ctx context.Context, w http.ResponseWriter, r *
 				}
 				return false
 			}
-			nc.WalkNetworks(l)
+			n.netController.WalkNetworks(l)
 		}
 	} else {
-		for _, nw := range nc.Networks() {
+		for _, nw := range n.netController.Networks() {
 			list = append(list, buildNetworkResource(nw))
 		}
 	}
-	return writeJSON(w, http.StatusOK, list)
+	return httputils.WriteJSON(w, http.StatusOK, list)
 }
 
-func (s *Server) getNetwork(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
-	if err := parseForm(r); err != nil {
+func (n *networkRouter) getNetwork(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
+	if err := httputils.ParseForm(r); err != nil {
 		return err
 	}
 
-	nc := s.daemon.NetworkController()
-	if nc == nil {
-		return ErrNoNetController
-	}
-
-	nw, err := findNetwork(nc, vars["id"], byID)
+	nw, err := findNetwork(n.netController, vars["id"], byID)
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, buildNetworkResource(nw))
+	return httputils.WriteJSON(w, http.StatusOK, buildNetworkResource(nw))
 }
 
-func (s *Server) postNetworkCreate(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
+func (n *networkRouter) postNetworkCreate(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
 	var create types.NetworkCreate
 	var warning string
 
-	if err := parseForm(r); err != nil {
+	if err := httputils.ParseForm(r); err != nil {
 		return err
 	}
 
-	if err := checkForJSON(r); err != nil {
+	if err := httputils.CheckForJSON(r); err != nil {
 		return err
-	}
-
-	nc := s.daemon.NetworkController()
-	if nc == nil {
-		return ErrNoNetController
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&create); err != nil {
 		return err
 	}
 
-	nw, err := findNetwork(nc, create.Name, byName)
+	nw, err := findNetwork(n.netController, create.Name, byName)
 	if _, ok := err.(libnetwork.ErrNoSuchNetwork); err != nil && !ok {
 		return err
 	}
@@ -115,92 +97,77 @@ func (s *Server) postNetworkCreate(ctx context.Context, w http.ResponseWriter, r
 		warning = fmt.Sprintf("Network with name %s (id : %s) already exists", nw.Name(), nw.ID())
 	}
 
-	processCreateDefaults(nc, &create)
+	processCreateDefaults(n.netController, &create)
 
-	nw, err = nc.NewNetwork(create.Driver, create.Name, parseOptions(create.Options)...)
+	nw, err = n.netController.NewNetwork(create.Driver, create.Name, parseOptions(create.Options)...)
 	if err != nil {
 		return err
 	}
 
-	return writeJSON(w, http.StatusCreated, &types.NetworkCreateResponse{
+	return httputils.WriteJSON(w, http.StatusCreated, &types.NetworkCreateResponse{
 		ID:      nw.ID(),
 		Warning: warning,
 	})
 }
 
-func (s *Server) postNetworkConnect(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
+func (n *networkRouter) postNetworkConnect(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
 	var connect types.NetworkConnect
-	if err := parseForm(r); err != nil {
+	if err := httputils.ParseForm(r); err != nil {
 		return err
 	}
 
-	if err := checkForJSON(r); err != nil {
+	if err := httputils.CheckForJSON(r); err != nil {
 		return err
-	}
-
-	nc := s.daemon.NetworkController()
-	if nc == nil {
-		return ErrNoNetController
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&connect); err != nil {
 		return err
 	}
 
-	nw, err := findNetwork(nc, vars["id"], byID)
+	nw, err := findNetwork(n.netController, vars["id"], byID)
 	if err != nil {
 		return err
 	}
 
-	container, err := s.daemon.Get(ctx, connect.Container)
+	container, err := n.daemon.Get(connect.Container)
 	if err != nil {
 		return fmt.Errorf("invalid container %s : %v", container, err)
 	}
-	return container.ConnectToNetwork(ctx, nw.Name())
+	return container.ConnectToNetwork(nw.Name())
 }
 
-func (s *Server) postNetworkDisconnect(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
+func (n *networkRouter) postNetworkDisconnect(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
 	var connect types.NetworkConnect
-	if err := parseForm(r); err != nil {
+	if err := httputils.ParseForm(r); err != nil {
 		return err
 	}
 
-	if err := checkForJSON(r); err != nil {
+	if err := httputils.CheckForJSON(r); err != nil {
 		return err
-	}
-
-	nc := s.daemon.NetworkController()
-	if nc == nil {
-		return ErrNoNetController
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&connect); err != nil {
 		return err
 	}
 
-	nw, err := findNetwork(nc, vars["id"], byID)
+	nw, err := findNetwork(n.netController, vars["id"], byID)
 	if err != nil {
 		return err
 	}
 
-	container, err := s.daemon.Get(ctx, connect.Container)
+	container, err := n.daemon.Get(connect.Container)
 	if err != nil {
 		return fmt.Errorf("invalid container %s : %v", container, err)
 	}
 	return container.DisconnectFromNetwork(nw)
 }
 
-func (s *Server) deleteNetwork(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
-	if err := parseForm(r); err != nil {
+func (n *networkRouter) deleteNetwork(ctx context.Context, w http.ResponseWriter, r *http.Request, vars map[string]string) error {
+	if err := httputils.ParseForm(r); err != nil {
 		return err
 	}
 
-	nc := s.daemon.NetworkController()
-	if nc == nil {
-		return ErrNoNetController
-	}
-
-	nw, err := findNetwork(nc, vars["id"], byID)
+	nw, err := findNetwork(n.netController, vars["id"], byID)
 	if err != nil {
 		return err
 	}
