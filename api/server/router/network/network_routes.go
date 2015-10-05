@@ -209,11 +209,11 @@ func buildNetworkResource(nw libnetwork.Network) *types.NetworkResource {
 					er.MacAddress = mac.String()
 				}
 				if ip := iface.Address(); len(ip.IP) > 0 {
-					er.IPv4Address = (&ip).String()
+					er.IPv4Address = (ip).String()
 				}
 
 				if ipv6 := iface.AddressIPv6(); len(ipv6.IP) > 0 {
-					er.IPv6Address = (&ipv6).String()
+					er.IPv6Address = (ipv6).String()
 				}
 			}
 			r.Containers[sb.ContainerID()] = er
